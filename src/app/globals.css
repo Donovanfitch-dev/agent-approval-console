@@ -76,6 +76,7 @@ html {
 }
 
 body {
+  overflow-wrap: break-word;
   background: var(--bg);
   color: var(--fg);
   font-family: var(--font-sans);
@@ -126,6 +127,25 @@ a {
 .mono {
   font-family: var(--font-mono);
   font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
+/* Grid and flex children may shrink below their content width; without this a
+   wide table or long token stretches the whole page instead of scrolling or
+   wrapping inside its own container. */
+.grid > *,
+.flex > * {
+  min-width: 0;
+}
+
+/* Inline links and disclosure toggles that need a comfortable touch target. */
+.tap {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.5rem;
+}
+summary {
+  padding-block: 0.6rem;
 }
 
 /* ---- Buttons & inputs ---- */
@@ -209,7 +229,7 @@ a {
   display: inline-flex;
   align-items: center;
   gap: 0.375rem;
-  min-height: 2.25rem;
+  min-height: 2.5rem;
   padding: 0.25rem 0.75rem;
   border-radius: 999px;
   border: 1px solid var(--border);

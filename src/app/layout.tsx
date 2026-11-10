@@ -4,7 +4,7 @@ import { currentRole } from "@/server/actors";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Agent Approval Console",
+  title: { default: "Agent Approval Console", template: "%s · Agent Approval Console" },
   description:
     "A human-in-the-loop approval gate for side-effecting actions proposed by AI agents, with a tamper-evident audit trail. Independent demonstration application; all data synthetic.",
 };

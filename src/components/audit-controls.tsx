@@ -5,7 +5,7 @@ import { useState } from "react";
 import { api, describeError } from "@/lib/api-client";
 
 /** Demo-only controls for showing tamper detection and starting over. */
-export function AuditControls() {
+export function AuditControls({ enabled }: { enabled: boolean }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -35,11 +35,17 @@ export function AuditControls() {
         The application never edits or deletes audit entries. This button simulates someone altering a stored row
         directly in the database, so you can watch verification catch it. Reset restores the seeded data.
       </p>
+      {!enabled ? (
+        <p className="notice notice-warn mb-3 text-sm">
+          These controls are switched off. Start the server with <code className="mono">ENABLE_DEMO_CONTROLS=1</code> to
+          use them.
+        </p>
+      ) : null}
       <div className="flex flex-wrap gap-3">
         <button
           type="button"
           className="btn"
-          disabled={busy}
+          disabled={busy || !enabled}
           onClick={() => call("/api/demo/tamper", "An audit entry was altered out-of-band. Verification above should now fail.")}
         >
           Simulate out-of-band tampering
@@ -47,7 +53,7 @@ export function AuditControls() {
         <button
           type="button"
           className="btn"
-          disabled={busy}
+          disabled={busy || !enabled}
           onClick={() => call("/api/demo/reset", "Demo data reset to the seeded state.")}
         >
           Reset demo data

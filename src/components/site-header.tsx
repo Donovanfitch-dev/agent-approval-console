@@ -21,7 +21,7 @@ export function SiteHeader({ role }: { role: DemoRole }) {
         <NavLinks />
         <div className="flex flex-col gap-1">
           <RoleSwitcher role={role} />
-          <p className="muted text-xs">
+          <p className="muted text-xs" aria-live="polite">
             Identity: <span className="mono">{DEMO_ACTORS[role].id}</span>
           </p>
         </div>

@@ -16,7 +16,7 @@ It deliberately does not own: authenticating people or agents, storing data dura
 src/domain   pure TypeScript, depends only on node:crypto
   types.ts          plain data types (JSON-serialisable)
   errors.ts         DomainError family with stable codes and a bundle-safe guard
-  validation.ts     tiny hand-written Reader: collects issues with dotted paths
+  validation.ts     tiny custom Reader: collects issues with dotted paths
   payloads.ts       per-action payload validators, field metadata, immutable-field table
   submission.ts     validation + canonical hash of an agent submission
   policy.ts         rules-as-data evaluation (pure)
@@ -43,7 +43,7 @@ Money is integer cents. Timestamps are ISO-8601 strings. Everything is plain dat
 
 ### Validation
 
-Validators are hand-written around a small `Reader` that records every problem rather than stopping at the first, and reports dotted paths such as `payload.newAddress.country`. Unknown fields are rejected. Strings are trimmed. The payload validators return a fresh object, so nothing the caller still holds can alias stored state.
+Validators are built around a small `Reader` that records every problem rather than stopping at the first, and reports dotted paths such as `payload.newAddress.country`. Unknown fields are rejected. Strings are trimmed. The payload validators return a fresh object, so nothing the caller still holds can alias stored state.
 
 ## 4. Risk policy
 
@@ -77,10 +77,11 @@ executed, rejected, expired: terminal
 
 `decide(id, actor, decision)`:
 
-1. Expire stale proposals, then load.
-2. **Authorize first**: an `agent`-kind actor, or any actor whose id equals the proposal's `agentId`, is refused. The refusal is written to the audit log as `decision_refused` and surfaced as HTTP 403. Authorizing before checking state means an unauthorized caller learns nothing about the proposal's state.
-3. Require `pending_approval`.
-4. Apply the decision.
+1. **Role check first**: an `agent`-kind actor is refused before anything else happens: no expiry sweep, no existence check, no state read. The refusal is written to the audit log as `decision_refused` (with the caller-supplied id, truncated) and surfaced as HTTP 403. The answer is identical for existing and unknown ids, and the refusal entry is the only side effect (a unit test asserts exactly that, with an overdue proposal that a sweep would have expired).
+2. Expire stale proposals, then load the proposal (a reviewer or admin gets 404 for an unknown id).
+3. **Proposer check**: an actor whose id equals the proposal's `agentId` is refused (also audited). This needs the proposal, so it necessarily follows the load.
+4. Require `pending_approval`.
+5. Apply the decision.
 
 **Approve** records an approval bound to the current `payloadRevision`. A reviewer who has already approved this revision cannot approve again. The proposal moves to `approved` only when the number of **distinct** reviewers with approvals on the current revision reaches the policy's `requiredApprovals`.
 
@@ -97,7 +98,7 @@ Audit entries for an edit: `payload_edited` (with the diff, policy before and af
 
 ## 7. Execution and idempotency
 
-Approval never runs a side effect. `execute(id, actor)`:
+Approval never runs a side effect. Only `reviewer` and `admin` actors may trigger execution: `execute(id, actor)` first refuses an `agent` actor (403, audited as `decision_refused` with `attempted: "execute"`, no state read), so an agent cannot cause the effect it proposed. There is no separate system path: auto-approved proposals also wait for a reviewer or admin to execute them, and a reviewer may execute a proposal they approved. Then `execute(id, actor)`:
 
 1. Read the proposal. `executed` returns `already_executed`; `executing` returns `in_progress`; any state other than `approved` or `failed` throws `IllegalTransitionError` (HTTP 409).
 2. **Claim**: commit `status = executing`, `attempts + 1` and an `execution_started` entry with `expectedVersion` set to the version just read. If another caller got there first, the repository raises `ConflictError`; this caller re-reads and reports the winner's state. Of N simultaneous callers exactly one claims.
@@ -178,11 +179,32 @@ CREATE TABLE audit_entries (
 - **Store singleton.** `src/server/store.ts` keeps the app on `globalThis` under `Symbol.for(...)`. A plain module variable is not enough: the dev server re-evaluates modules on hot reload, and pages and route handlers can be bundled into separate module graphs, each of which would otherwise get its own empty store. The store is created (and seeded) lazily as a promise, and a failed initialisation is not cached.
 - **Bundle-safe error checks.** The same duplication means a `DomainError` thrown by a service created in one bundle is not `instanceof DomainError` in another. This showed up in a curl check during the build as a validation error returned as HTTP 500. Boundary code therefore uses `isDomainError` / `hasErrorCode`, which test a `Symbol.for` brand and the error code instead of class identity. Domain-internal `instanceof` checks stay safe because a service and the repository it uses always come from the same bundle.
 - **Async request APIs.** `params`, `searchParams` and `cookies()` are awaited; page and handler props use the generated `PageProps`, `LayoutProps` and `RouteContext` helpers (produced by `next typegen`, which `npm run typecheck` runs first).
+- **HTTP boundary.** Every mutating route checks the content type before doing anything else (`requireJson` in `src/server/http.ts`, directly or through `readJson`): anything but `Content-Type: application/json` is a 415, which keeps cross-site HTML form posts (urlencoded, multipart, text/plain) out; it is not a full CSRF defence (no tokens or origin checks). Bodies are read as a stream and cut off at 64 KiB counted in bytes (413), not buffered first. `parseDecision` allows each decision kind only its own fields, so `payload` on an `approve` is a 422 rather than being silently ignored. The two destructive demo endpoints (`/api/demo/reset`, `/api/demo/tamper`) return 403 unless the process was started with `ENABLE_DEMO_CONTROLS=1`, read per request.
 - **Turbopack root.** `next.config.ts` pins `turbopack.root` to the project directory so a lockfile in a parent directory is never mistaken for this project's.
 - **UI.** Server components render data directly from the service. Client components exist only where interaction is needed (role switcher, simulate, review actions, audit demo controls) and talk to the same route handlers an external caller would use, then call `router.refresh()`.
 - **Accessibility and presentation.** Semantic landmarks and headings, a skip link, labelled controls, visible focus rings, status communicated by text and not colour alone, `aria-live` regions for action results, comfortably sized targets, layouts that reflow to phone width (the audit table scrolls inside its own labelled region), and light and dark themes from CSS custom properties following the OS preference. No component library, fonts are the system stack, and nothing is fetched from third parties.
 
-## 11. Demo stand-ins
+## 11. Testing and accessibility checks
+
+| Layer | Tool | What it covers |
+|---|---|---|
+| Domain | Vitest (112 tests in `src/domain/__tests__`) | The rules in sections 3 to 8: validation, policy, transition matrix, decisions, expiry, idempotent and concurrent execution, retry, hash chain, repository, seed and generator. Coverage of the loaded `src/domain` files was measured once with `@vitest/coverage-v8` (installed with `--no-save`, not a project dependency): about 94% of lines and 89% of branches; the UI-label helper `labels.ts` is exercised only by the browser tests |
+| API handlers | Vitest (18 tests in `src/server/__tests__`) | The real route handlers called with `NextRequest` objects, without an HTTP server: 401/400/403 identity and authorization, execution restricted to reviewer and admin, 415, 413 (bytes), decision field rules, the demo flag gate |
+| UI | Playwright (56 tests), Chromium only, against the production build | User flows listed in the README, plus layout, titles, landmarks, keyboard behaviour and axe |
+
+The e2e suite starts the server with `ENABLE_DEMO_CONTROLS=1`, uses the demo reset endpoint before every test, and runs with one worker because the store is per process. The port is `E2E_PORT` (default 4317); `E2E_SKIP_BUILD=1` reuses an existing build, which CI does. It asserts behaviour through the DOM (roles, labels, visible text) and a handful of direct API calls.
+
+Defects that the browser tests exposed and that were fixed:
+
+- The audit page overflowed horizontally on phones: a grid child with an unshrinkable table stretched the whole page. Grid and flex children now have `min-width: 0`, so the table scrolls inside its own labelled region.
+- Filter chips and several inline links were under 40px tall. They now have 40px minimum heights.
+- Every page had the same title. Pages now set their own (the root-segment pages use absolute titles because a layout title template does not apply to pages in its own segment).
+- Result and error messages in the review panel were a `role="alert"` element nested inside an `aria-live` region, which can announce the message twice; they are now sibling regions.
+- After a successful decision the review panel was remounted (it was keyed on the proposal version), which discarded the confirmation message and dropped keyboard focus to `<body>`. The panel is no longer remounted; the result region takes focus after an action; the identity line in the header is `aria-live`.
+
+Not verified: any assistive technology, browsers other than Chromium, real devices.
+
+## 12. Demo stand-ins
 
 | Stand-in | Real thing it replaces | Note |
 |---|---|---|
@@ -192,8 +214,8 @@ CREATE TABLE audit_entries (
 | `SimulatedExecutor` | Payment, email and order-system clients | |
 | Tamper and reset endpoints | Nothing; they exist to demonstrate detection | The service has no API that edits or deletes audit rows |
 
-## 12. Security notes
+## 13. Security notes
 
 This is a demonstration, and the demo role is not security. Things a production version would need that this one does not have: verified identity, authorization policy beyond "reviewer or admin", per-agent credentials and quotas, rate limiting, CSRF defence for cookie-authenticated calls, an authoritative source for facts like shipment status instead of agent-reported fields, redaction rules for the rationale and payload in logs, and external anchoring of the audit head.
 
-Mitigations that are present: input validation with unknown-field rejection and size limits on bodies, server-side enforcement of separation of duties (not hidden buttons), refusal of unauthorized decisions before any state is revealed or changed, audited refusals, locked identifying fields during edits, fail-closed policy defaults, and a regular-expression rule set authored as data rather than accepted from callers.
+Mitigations that are present: input validation with unknown-field rejection, a JSON-only content type and a byte-counted body cap on mutating routes, server-side enforcement of separation of duties (not hidden buttons), execution restricted to reviewer and admin roles, refusal of agent-role decisions and executions before any state is read or changed, audited refusals, locked identifying fields during edits, fail-closed policy defaults, and a regular-expression rule set authored as data rather than accepted from callers.

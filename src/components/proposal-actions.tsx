@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { DEMO_ROLE_LABELS, type DemoRole } from "@/domain/demo-roles";
 import { FIELD_SPECS, type FieldSpec } from "@/domain/payloads";
 import { api, describeError } from "@/lib/api-client";
@@ -49,12 +49,24 @@ export function ProposalActions({ proposal, role, actorId, approvers }: Props) {
   const [comment, setComment] = useState("");
   const [reason, setReason] = useState("");
   const editable = FIELD_SPECS[proposal.type].filter((f) => f.editable);
-  const [values, setValues] = useState<Record<string, string>>(() =>
-    Object.fromEntries(editable.map((f) => [f.path, initialValue(f, proposal.payload)])),
-  );
+  const [values, setValues] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const feedbackRef = useRef<HTMLDivElement>(null);
+
+  // After an action the control that was focused (a submit button inside a form
+  // that just closed, or a button whose panel changed) may disappear. Move focus
+  // to the result so keyboard and screen-reader users land on the outcome.
+  useEffect(() => {
+    if (message || error) feedbackRef.current?.focus();
+  }, [message, error]);
+
+  function openEdit() {
+    // Seed the form from the CURRENT payload each time it opens (it may have changed).
+    setValues(Object.fromEntries(editable.map((f) => [f.path, initialValue(f, proposal.payload)])));
+    setMode("edit");
+  }
 
   async function run(label: string, fn: () => Promise<string | void>) {
     setBusy(true);
@@ -111,7 +123,7 @@ export function ProposalActions({ proposal, role, actorId, approvers }: Props) {
         api<{ outcome: string; performed: boolean }>(`/api/proposals/${proposal.id}/execute`, { role }),
       ]);
       const performed = results.filter((r) => r.performed).length;
-      return `Sent 2 simultaneous execute requests. Side effect performed ${performed} time(s); outcomes: ${results
+      return `Sent 2 parallel execute requests. Side effect performed ${performed} time(s); outcomes: ${results
         .map((r) => r.outcome.replace(/_/g, " "))
         .join(", ")}.`;
     });
@@ -138,8 +150,8 @@ export function ProposalActions({ proposal, role, actorId, approvers }: Props) {
           </p>
           {role === "agent" ? (
             <p className="notice notice-warn text-sm">
-              Agents cannot review. You can still click a button to see the server refuse it and record the attempt in
-              the audit log.
+              Agents cannot review or execute. You can still click a button to see the server refuse it and record the
+              attempt in the audit log.
             </p>
           ) : null}
 
@@ -172,7 +184,7 @@ export function ProposalActions({ proposal, role, actorId, approvers }: Props) {
               disabled={busy}
               aria-expanded={mode === "edit"}
               aria-controls="edit-form"
-              onClick={() => setMode(mode === "edit" ? "none" : "edit")}
+              onClick={() => (mode === "edit" ? setMode("none") : openEdit())}
             >
               Edit &amp; approve…
             </button>
@@ -277,6 +289,12 @@ export function ProposalActions({ proposal, role, actorId, approvers }: Props) {
 
       {proposal.status === "approved" || proposal.status === "failed" ? (
         <div className="grid gap-3">
+          {role === "agent" ? (
+            <p className="notice notice-warn text-sm">
+              Only reviewers and admins can trigger execution. As an agent you can still click to see the server refuse
+              it and record the attempt in the audit log.
+            </p>
+          ) : null}
           {proposal.status === "failed" ? (
             <p className="notice notice-bad text-sm" role="note">
               Last attempt failed: {proposal.execution.lastError}. The failure is in the audit log; retrying is safe
@@ -291,7 +309,7 @@ export function ProposalActions({ proposal, role, actorId, approvers }: Props) {
             </button>
             {proposal.status === "approved" ? (
               <button type="button" className="btn" disabled={busy} onClick={executeTwice}>
-                Send 2 simultaneous execute requests
+                Send 2 parallel execute requests
               </button>
             ) : null}
           </div>
@@ -302,13 +320,10 @@ export function ProposalActions({ proposal, role, actorId, approvers }: Props) {
         <p className="text-sm muted">No further actions are available: this proposal is {proposal.status.replace(/_/g, " ")}.</p>
       ) : null}
 
-      <div aria-live="polite" className="mt-3 text-sm">
-        {message ? <p className="notice notice-ok">{message}</p> : null}
-        {error ? (
-          <p role="alert" className="notice notice-bad">
-            {error}
-          </p>
-        ) : null}
+      {/* Two sibling regions (not nested) so each message is announced once: results politely, errors assertively. */}
+      <div id="action-feedback" ref={feedbackRef} tabIndex={-1} className="mt-3 text-sm">
+        <div aria-live="polite">{message ? <p className="notice notice-ok">{message}</p> : null}</div>
+        <div role="alert">{error ? <p className="notice notice-bad">{error}</p> : null}</div>
       </div>
     </section>
   );

@@ -140,6 +140,40 @@ describe("decisions", () => {
   });
 });
 
+describe("authorization happens before any state change or existence check", () => {
+  it("an agent gets the same refusal for existing and unknown ids, with only the refusal recorded", async () => {
+    const app = makeApp();
+    const { proposal } = await app.service.submit(refundInput(8000));
+    app.advance(48 * 3600_000); // the proposal is now overdue, but nothing has swept it yet
+    const before = app.repo.auditLength;
+    const rawBefore = await app.repo.getProposal(proposal.id);
+
+    for (const id of [proposal.id, "PR-9999"]) {
+      for (const decision of [
+        { kind: "approve" as const },
+        { kind: "reject" as const, reason: "no" },
+        { kind: "edit_approve" as const, payload: {} },
+      ]) {
+        const err = await app.service.decide(id, operator, decision).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(ForbiddenError);
+        expect((err as Error).message).toBe("Agents cannot review proposals; a human reviewer must decide.");
+      }
+    }
+
+    // 6 refusals, nothing else: no expiry sweep, no proposal write.
+    expect(app.repo.auditLength).toBe(before + 6);
+    expect(await app.repo.getProposal(proposal.id)).toEqual(rawBefore);
+    expect(rawBefore?.status).toBe("pending_approval");
+    const types = (await app.repo.listAudit()).slice(before).map((e) => e.type);
+    expect(new Set(types)).toEqual(new Set(["decision_refused"]));
+  });
+
+  it("a reviewer still gets a plain not-found for unknown ids", async () => {
+    const app = makeApp();
+    await expect(app.service.decide("PR-9999", reviewerA, { kind: "approve" })).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
 describe("edit-then-approve", () => {
   it("records the diff and re-evaluates policy on the edited payload", async () => {
     const app = makeApp();
@@ -289,17 +323,31 @@ describe("expiry", () => {
 });
 
 describe("execution", () => {
+  it("only reviewers and admins may trigger execution; an agent is refused and audited", async () => {
+    const app = makeApp();
+    const { proposal } = await app.service.submit(refundInput(2000)); // auto-approved, waiting for execution
+    await expect(app.service.execute(proposal.id, operator)).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(app.service.execute("PR-9999", operator)).rejects.toBeInstanceOf(ForbiddenError); // same answer for unknown ids
+    expect(app.executor.sideEffectCount).toBe(0);
+    const { proposal: after, timeline } = await app.service.get(proposal.id);
+    expect(after.status).toBe("approved");
+    expect(after.execution.attempts).toBe(0);
+    expect(timeline.at(-1)).toMatchObject({ type: "decision_refused", actor: operator.id, data: { attempted: "execute" } });
+
+    expect((await app.service.execute(proposal.id, admin)).outcome).toBe("executed");
+  });
+
   it("refuses to execute anything that is not approved", async () => {
     const app = makeApp();
     const { proposal } = await app.service.submit(refundInput(8000));
-    await expect(app.service.execute(proposal.id, operator)).rejects.toBeInstanceOf(IllegalTransitionError);
+    await expect(app.service.execute(proposal.id, reviewerA)).rejects.toBeInstanceOf(IllegalTransitionError);
     expect(app.executor.sideEffectCount).toBe(0);
   });
 
   it("executes an approved action once and records a receipt", async () => {
     const app = makeApp();
     const { proposal } = await app.service.submit(refundInput(2000));
-    const res = await app.service.execute(proposal.id, operator);
+    const res = await app.service.execute(proposal.id, reviewerA);
     expect(res).toMatchObject({ performed: true, outcome: "executed" });
     expect(res.proposal.status).toBe("executed");
     expect(res.proposal.execution.receipt?.effect).toMatch(/refund of \$20\.00/);
@@ -309,8 +357,8 @@ describe("execution", () => {
   it("executing twice (sequentially) performs the side effect once", async () => {
     const app = makeApp();
     const { proposal } = await app.service.submit(refundInput(2000));
-    await app.service.execute(proposal.id, operator);
-    const again = await app.service.execute(proposal.id, operator);
+    await app.service.execute(proposal.id, reviewerA);
+    const again = await app.service.execute(proposal.id, reviewerA);
     expect(again).toMatchObject({ performed: false, outcome: "already_executed" });
     expect(app.executor.sideEffectCount).toBe(1);
   });
@@ -318,7 +366,7 @@ describe("execution", () => {
   it("concurrent double-click: many simultaneous executes yield exactly one side effect", async () => {
     const app = makeApp();
     const { proposal } = await app.service.submit(refundInput(2000));
-    const results = await Promise.all(Array.from({ length: 8 }, () => app.service.execute(proposal.id, operator)));
+    const results = await Promise.all(Array.from({ length: 8 }, () => app.service.execute(proposal.id, reviewerA)));
     expect(app.executor.sideEffectCount).toBe(1);
     expect(results.filter((r) => r.performed)).toHaveLength(1);
     expect(results.every((r) => ["executed", "already_executed", "in_progress"].includes(r.outcome))).toBe(true);
@@ -330,14 +378,14 @@ describe("execution", () => {
   it("records executor failures and allows a retry that succeeds", async () => {
     const app = makeApp();
     const { proposal } = await app.service.submit(refundInput(2000, {}, { orderId: "ORD-FLAKY-0001" }));
-    const first = await app.service.execute(proposal.id, operator);
+    const first = await app.service.execute(proposal.id, reviewerA);
     expect(first).toMatchObject({ performed: true, outcome: "failed" });
     expect(first.proposal.status).toBe("failed");
     expect(first.proposal.execution).toMatchObject({ attempts: 1 });
     expect(first.proposal.execution.lastError).toMatch(/timeout/);
     expect(app.executor.sideEffectCount).toBe(0);
 
-    const second = await app.service.execute(proposal.id, operator);
+    const second = await app.service.execute(proposal.id, reviewerA);
     expect(second).toMatchObject({ performed: true, outcome: "executed" });
     expect(second.proposal.execution.attempts).toBe(2);
     expect(second.proposal.execution.lastError).toBeUndefined();
@@ -382,7 +430,7 @@ describe("audit trail through the service", () => {
     const { proposal } = await app.service.submit(refundInput(30_000));
     await app.service.decide(proposal.id, reviewerA, { kind: "approve" });
     await app.service.decide(proposal.id, reviewerB, { kind: "approve" });
-    await app.service.execute(proposal.id, operator);
+    await app.service.execute(proposal.id, reviewerA);
     const report = await app.service.auditReport();
     expect(report.verification).toMatchObject({ valid: true });
     expect(report.entries.map((e) => e.type)).toEqual([

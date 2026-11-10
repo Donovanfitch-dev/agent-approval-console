@@ -51,7 +51,7 @@ export async function createSeededApp(options: AppOptions = {}): Promise<App> {
     });
     return proposal;
   };
-  const execute = (id: string, actor: Actor = OPERATOR) => service.execute(id, actor);
+  const execute = (id: string, actor: Actor = A) => service.execute(id, actor);
 
   // 1. Will have expired: nobody reviewed it within the 24h window.
   minutesAgo(1800);

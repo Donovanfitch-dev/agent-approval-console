@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { RiskBadge, StatusBadge } from "@/components/badges";
 import { SimulateButton } from "@/components/simulate-button";
@@ -9,6 +10,8 @@ import { POLICY_OUTCOMES, STATUSES, type PolicyOutcome, type Status } from "@/do
 import { getApp } from "@/server/store";
 
 export const dynamic = "force-dynamic";
+
+export const metadata: Metadata = { title: { absolute: "Approval queue · Agent Approval Console" } };
 
 const FILTER_STATUSES = STATUSES.filter((s) => s !== "proposed");
 
@@ -102,7 +105,7 @@ export default async function QueuePage({ searchParams }: PageProps<"/">) {
         </h2>
         {proposals.length === 0 ? (
           <p className="card muted">
-            No proposals match these filters. <Link href="/">Clear filters</Link> or simulate a new agent proposal.
+            No proposals match these filters. <Link href="/" className="tap">Clear filters</Link> or simulate a new agent proposal.
           </p>
         ) : (
           <ul className="grid gap-3">
@@ -110,7 +113,7 @@ export default async function QueuePage({ searchParams }: PageProps<"/">) {
               <li key={p.id} className="card grid gap-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <h3 className="text-base font-semibold">
-                    <Link href={`/proposals/${p.id}`}>
+                    <Link href={`/proposals/${p.id}`} className="tap">
                       {p.id} · {ACTION_LABELS[p.type]}
                     </Link>
                   </h3>

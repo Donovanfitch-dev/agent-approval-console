@@ -1,10 +1,14 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { AuditControls } from "@/components/audit-controls";
 import { formatUtc } from "@/domain/format";
 import { AUDIT_EVENT_LABELS } from "@/domain/labels";
+import { demoControlsEnabled } from "@/server/http";
 import { getApp } from "@/server/store";
 
 export const dynamic = "force-dynamic";
+
+export const metadata: Metadata = { title: "Audit log" };
 
 export default async function AuditPage() {
   const { service } = await getApp();
@@ -41,7 +45,7 @@ export default async function AuditPage() {
         )}
       </div>
 
-      <AuditControls />
+      <AuditControls enabled={demoControlsEnabled()} />
 
       <section aria-labelledby="entries-heading">
         <h2 id="entries-heading" className="mb-2 text-lg font-semibold">
@@ -79,7 +83,7 @@ export default async function AuditPage() {
                       </details>
                     </td>
                     <td>
-                      {e.proposalId ? <Link href={`/proposals/${e.proposalId}`}>{e.proposalId}</Link> : "—"}
+                      {e.proposalId ? <Link href={`/proposals/${e.proposalId}`} className="tap">{e.proposalId}</Link> : "—"}
                     </td>
                     <td className="mono">{e.actor}</td>
                     <td className="mono">

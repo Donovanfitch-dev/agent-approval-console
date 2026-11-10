@@ -244,28 +244,32 @@ export class ApprovalService {
 
   // ---------------------------------------------------------------- decide
 
-  private async authorizeReviewer(proposal: Proposal, actor: Actor, attempted: string): Promise<void> {
-    let message: string | null = null;
-    if (actor.kind === "agent") {
-      message = "Agents cannot review proposals; a human reviewer must decide.";
-    } else if (actor.id === proposal.agentId) {
-      message = "The proposing agent cannot review its own proposal.";
-    }
-    if (message) {
-      await this.deps.repo.appendAudit([
-        this.audit(proposal.id, "decision_refused", actor.id, this.now().toISOString(), {
-          attempted,
-          reason: message,
-        }),
-      ]);
-      throw new ForbiddenError(message);
-    }
+  /**
+   * Record a refused attempt and throw. The only side effect of a refusal is
+   * this one audit entry. `proposalId` is whatever the caller supplied (capped
+   * in length), so a refusal reads the same whether or not the proposal exists.
+   */
+  private async refuse(proposalId: string, actor: Actor, attempted: string, message: string): Promise<never> {
+    await this.deps.repo.appendAudit([
+      this.audit(proposalId.slice(0, 64), "decision_refused", actor.id, this.now().toISOString(), {
+        attempted,
+        reason: message,
+      }),
+    ]);
+    throw new ForbiddenError(message);
   }
 
   async decide(id: string, actor: Actor, decision: Decision): Promise<Proposal> {
+    // Authorize by role BEFORE any state change (expiry sweep) or existence check,
+    // so an unauthorized caller cannot probe which proposals exist or what state they are in.
+    if (actor.kind === "agent") {
+      await this.refuse(id, actor, decision.kind, "Agents cannot review proposals; a human reviewer must decide.");
+    }
     await this.expireStale();
     const proposal = await this.require(id);
-    await this.authorizeReviewer(proposal, actor, decision.kind);
+    if (actor.id === proposal.agentId) {
+      await this.refuse(id, actor, decision.kind, "The proposing agent cannot review its own proposal.");
+    }
 
     const target: Status = decision.kind === "reject" ? "rejected" : "approved";
     if (proposal.status !== "pending_approval") {
@@ -439,7 +443,16 @@ export class ApprovalService {
 
   // --------------------------------------------------------------- execute
 
+  /**
+   * Run an approved proposal's side effect. Only reviewers and admins may
+   * trigger execution: an agent must not be able to cause the effect it
+   * proposed. (There is no separate "system" executor path; auto-approved
+   * proposals also wait for a reviewer or admin to execute them.)
+   */
   async execute(id: string, actor: Actor): Promise<ExecuteResult> {
+    if (actor.kind === "agent") {
+      await this.refuse(id, actor, "execute", "Agents cannot trigger execution; a reviewer or admin must run approved actions.");
+    }
     for (let tries = 0; tries < 3; tries++) {
       const proposal = await this.require(id);
 

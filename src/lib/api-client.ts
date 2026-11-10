@@ -25,7 +25,8 @@ export async function api<T>(path: string, init: { method?: string; role?: strin
   const response = await fetch(path, {
     method: init.method ?? "POST",
     headers: {
-      ...(init.body !== undefined ? { "Content-Type": "application/json" } : {}),
+      // The API requires this header on every mutating request, with or without a body.
+      "Content-Type": "application/json",
       ...(init.role ? { "x-demo-role": init.role } : {}),
     },
     body: init.body !== undefined ? JSON.stringify(init.body) : undefined,

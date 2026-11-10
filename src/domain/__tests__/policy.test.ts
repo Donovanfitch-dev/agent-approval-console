@@ -92,6 +92,36 @@ describe("address changes", () => {
   });
 });
 
+describe("comparison operators", () => {
+  const configWith = (op: "gt" | "gte" | "lt" | "lte", value: number): PolicyConfig => ({
+    version: "ops",
+    rules: [
+      { id: "base", actionType: "issue_refund", description: "", when: { op: "always" }, outcome: "auto_approve", reasonCode: "BASE", message: "" },
+      { id: "r", actionType: "issue_refund", description: "", when: { op, field: "amountCents", value }, outcome: "needs_approval", reasonCode: "R", message: "" },
+    ],
+  });
+  const outcome = (op: "gt" | "gte" | "lt" | "lte", value: number, amount: number) =>
+    evaluatePolicy("issue_refund", refund(amount), configWith(op, value)).outcome;
+
+  it.each([
+    ["gt", 1000, 1000, "auto_approve"],
+    ["gt", 1000, 1001, "needs_approval"],
+    ["gte", 1000, 999, "auto_approve"],
+    ["gte", 1000, 1000, "needs_approval"],
+    ["lt", 1000, 1000, "auto_approve"],
+    ["lt", 1000, 999, "needs_approval"],
+    ["lte", 1000, 1001, "auto_approve"],
+    ["lte", 1000, 1000, "needs_approval"],
+  ] as const)("%s %i with amount %i -> %s", (op, value, amount, expected) => {
+    expect(outcome(op, value, amount)).toBe(expected);
+  });
+
+  it("a numeric rule never matches a missing or non-numeric field", () => {
+    const r = evaluatePolicy("issue_refund", { orderId: "ORD-1", currency: "USD", reasonCode: "late" } as unknown as Payload, configWith("gte", 0));
+    expect(r.outcome).toBe("auto_approve");
+  });
+});
+
 describe("engine behaviour", () => {
   it("fails closed when no rule covers the action", () => {
     const empty: PolicyConfig = { version: "empty", rules: [] };
@@ -123,6 +153,20 @@ describe("engine behaviour", () => {
   it("the default policy config is valid and the config is plain JSON", () => {
     expect(validatePolicyConfig(DEFAULT_POLICY)).toEqual([]);
     expect(JSON.parse(JSON.stringify(DEFAULT_POLICY))).toEqual(DEFAULT_POLICY);
+  });
+
+  it("rejects an unknown action type, an unknown outcome, and a missing version", () => {
+    const bad = {
+      version: "",
+      rules: [
+        { id: "x", actionType: "wire_money", description: "", when: { op: "always" }, outcome: "auto_approve", reasonCode: "X", message: "" },
+        { id: "y", actionType: "issue_refund", description: "", when: { op: "always" }, outcome: "maybe", reasonCode: "Y", message: "" },
+      ],
+    } as unknown as PolicyConfig;
+    const problems = validatePolicyConfig(bad);
+    expect(problems).toContain("version is required");
+    expect(problems).toContain('x: unknown action type "wire_money"');
+    expect(problems).toContain('y: unknown outcome "maybe"');
   });
 
   it("flags duplicate ids and invalid patterns", () => {

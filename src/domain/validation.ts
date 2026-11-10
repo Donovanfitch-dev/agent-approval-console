@@ -1,7 +1,7 @@
 import { ValidationError, type ValidationIssue } from "./errors";
 
 /**
- * A tiny hand-written validation toolkit. A `Reader` wraps an unknown record,
+ * A tiny custom validation toolkit. A `Reader` wraps an unknown record,
  * collects issues (rather than throwing on the first), and reports dotted
  * paths so callers get precise, actionable errors.
  */

@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { RiskBadge, StatusBadge } from "@/components/badges";
@@ -14,6 +15,18 @@ import { currentRole } from "@/server/actors";
 import { getApp } from "@/server/store";
 
 export const dynamic = "force-dynamic";
+
+export async function generateMetadata({ params }: PageProps<"/proposals/[id]">): Promise<Metadata> {
+  const { id } = await params;
+  const { service } = await getApp();
+  try {
+    const { proposal } = await service.get(id);
+    return { title: `${proposal.id} · ${ACTION_LABELS[proposal.type]}` };
+  } catch (e) {
+    if (hasErrorCode(e, "not_found")) return { title: "Proposal not found" };
+    throw e;
+  }
+}
 
 export default async function ProposalPage({ params }: PageProps<"/proposals/[id]">) {
   const { id } = await params;
@@ -34,7 +47,7 @@ export default async function ProposalPage({ params }: PageProps<"/proposals/[id
     <div className="grid gap-6">
       <div>
         <p className="text-sm">
-          <Link href="/">← Back to queue</Link>
+          <Link href="/" className="tap">← Back to queue</Link>
         </p>
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <h1 className="text-2xl font-bold">
@@ -175,7 +188,6 @@ export default async function ProposalPage({ params }: PageProps<"/proposals/[id
 
         <div className="grid gap-6">
           <ProposalActions
-            key={`${p.version}-${role}`}
             proposal={p}
             role={role}
             actorId={DEMO_ACTORS[role].id}
